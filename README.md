@@ -96,7 +96,7 @@ In streaming mode, you can use `$field_name$` syntax in the `url`, `data`, and `
     -   Supported: `Bearer`, `Basic`, `Token`. (e.g., `auth_type="Basic" auth_token="dXNlcjpwYXNz..."`).
 -   **`parse_response`** (optional): Set to `true` to automatically parse the API response into Splunk events (a table).
     -   Default: `false` (returns a single event with `status_code` and `status_message`).
-    -   Supported formats: `JSON` (list of objects, or dict of objects), `CSV`, `TSV` (auto-detects delimiter), and `XML`.
+    -   Supported formats: `JSON` (list of objects, or dict of objects), `CSV`, `TSV` (auto-detects delimiter), `XML`, and Server-Sent Events.
 -   **`json_path`** (optional): Used with `parse_response=true` for nested JSON. Specifies the key to find the list of results.
     -   Example: If the response is `{"count": 10, "results": [...] }`, use `json_path="results"`.
     -   Supports dot notation for deeper nesting (e.g., `json_path="data.items"`).
@@ -111,6 +111,18 @@ In streaming mode, you can use `$field_name$` syntax in the `url`, `data`, and `
     -   Default: `10`.
 -   **`debug`** (optional): Set to `true` to return the request details (URL, headers, data) *without* executing the request.
     -   Default: `false`.
+
+---
+
+## Server-Sent Events
+
+Responses with `Content-Type: text/event-stream` are consumed incrementally. Each SSE message is emitted to Splunk as soon as its `data` field is complete, rather than waiting for the connection to close. The fields `sse_data`, `sse_event`, `sse_id`, and `sse_retry` contain the SSE payload and optional metadata.
+
+```spl
+| crest url="https://example.com/search/stream" method="get"
+```
+
+The search can be stopped to close the connection, or it will continue until the server closes the stream. With `parse_response=true`, JSON SSE payloads are parsed using the normal JSON response rules.
 
 ---
 
