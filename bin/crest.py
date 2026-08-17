@@ -186,20 +186,29 @@ class CustomRest(StreamingCommand):
                 # 'self.rest' already logged the error
                 yield record  # Return the original event that failed
                 return  # Stop the generator
-            
-            # --- 7. Response Parsing ---
-            if self.parse_response:
-                # Hand off to the parsing generator
-                for parsed_event in self.parse_response_data(response, record, current_url):
-                    yield parsed_event
-            
-            # --- 8. Default Response (No Parsing) ---
-            else:
-                record["status_code"] = response.status_code
-                record["status_message"] = response.text
-                if response.status_code < 200 or response.status_code >= 300:
-                    self.warnings.append(f"Request to {current_url} returned HTTP status {response.status_code}")
-                yield record
+
+            try:
+                # --- 7. Response Parsing ---
+                if self.parse_response:
+                    # Hand off to the parsing generator
+                    for parsed_event in self.parse_response_data(response, record, current_url):
+                        yield parsed_event
+
+                # --- 8. Default Response (No Parsing) ---
+                else:
+                    content_type = response.headers.get('Content-Type', '').lower()
+                    if 'text/event-stream' in content_type:
+                        for parsed_event in self.parse_sse(response, record, current_url):
+                            yield parsed_event
+                    else:
+                        record["status_code"] = response.status_code
+                        record["status_message"] = response.text
+                        if response.status_code < 200 or response.status_code >= 300:
+                            self.warnings.append(f"Request to {current_url} returned HTTP status {response.status_code}")
+                        yield record
+            finally:
+                # Closing the response also stops an SSE request when the search is cancelled.
+                response.close()
 
         except Exception as e:
             self.errors.append(f"Unexpected error in 'process_record': {e}")
@@ -224,10 +233,14 @@ class CustomRest(StreamingCommand):
             return  # Stop the generator
 
         content_type = response.headers.get('Content-Type', '').lower()
-        
+            
         try:
             # --- Parser Router ---
-            if 'application/json' in content_type:
+            if 'text/event-stream' in content_type:
+                for event in self.parse_sse(response, base_record, url_called, metadata):
+                    yield event
+            
+            elif 'application/json' in content_type:
                 for event in self.parse_json(response.json(), base_record, metadata, self.json_path):
                     yield event
             
@@ -252,6 +265,73 @@ class CustomRest(StreamingCommand):
         except Exception as e:
             self.errors.append(f"Failed to parse response: {e}")
             yield self.yield_raw_response(response, base_record)
+
+    def parse_sse(self, response, base_record, url_called, metadata=None):
+        """Yield one Splunk event for each Server-Sent Event received."""
+        if metadata is None:
+            metadata = {
+                "crest_status_code": response.status_code,
+                "crest_url": url_called
+            }
+
+        event_fields = {}
+        data_lines = []
+
+        def emit_event():
+            if not data_lines:
+                return None
+
+            data = "\n".join(data_lines)
+            event = {**base_record, **metadata, "sse_data": data, "status_message": data}
+            if "event" in event_fields:
+                event["sse_event"] = event_fields["event"]
+            if "id" in event_fields:
+                event["sse_id"] = event_fields["id"]
+            if "retry" in event_fields:
+                event["sse_retry"] = event_fields["retry"]
+
+            # SSE data is frequently JSON; preserve the raw payload unless parsing
+            # was explicitly requested, in which case use the normal JSON parser.
+            if self.parse_response:
+                try:
+                    parsed = loads(data)
+                    parsed_events = list(self.parse_json(parsed, event, metadata, self.json_path))
+                    return parsed_events or [event]
+                except (JSONDecodeError, TypeError):
+                    return [event]
+            return [event]
+
+        for line in response.iter_lines(decode_unicode=True):
+            if isinstance(line, bytes):
+                line = line.decode("utf-8", errors="replace")
+
+            if line == "":
+                emitted = emit_event()
+                if emitted:
+                    for event in emitted:
+                        yield event
+                event_fields = {}
+                data_lines = []
+                continue
+
+            if line.startswith(":"):
+                continue
+
+            field, separator, value = line.partition(":")
+            if not separator:
+                value = ""
+            elif value.startswith(" "):
+                value = value[1:]
+
+            if field == "data":
+                data_lines.append(value)
+            elif field in ("event", "id", "retry"):
+                event_fields[field] = value
+
+        emitted = emit_event()
+        if emitted:
+            for event in emitted:
+                yield event
 
     def yield_raw_response(self, response, record):
         """Helper to return the raw response (default behavior)."""
@@ -393,23 +473,23 @@ class CustomRest(StreamingCommand):
             # --- Method Router ---
             if method == "get":
                 return requests.get(
-                    url, headers=headers, data=data, timeout=self.timeout, verify=verify_ssl
+                    url, headers=headers, data=data, timeout=self.timeout, verify=verify_ssl, stream=True
                 )
             elif method == "post":
                 return requests.post(
-                    url, headers=headers, data=data, timeout=self.timeout, verify=verify_ssl
+                    url, headers=headers, data=data, timeout=self.timeout, verify=verify_ssl, stream=True
                 )
             elif method == "put": # NEW
                 return requests.put(
-                    url, headers=headers, data=data, timeout=self.timeout, verify=verify_ssl
+                    url, headers=headers, data=data, timeout=self.timeout, verify=verify_ssl, stream=True
                 )
             elif method == "patch": # NEW
                 return requests.patch(
-                    url, headers=headers, data=data, timeout=self.timeout, verify=verify_ssl
+                    url, headers=headers, data=data, timeout=self.timeout, verify=verify_ssl, stream=True
                 )
             elif method == "delete":
                 return requests.delete(
-                    url, headers=headers, data=data, timeout=self.timeout, verify=verify_ssl
+                    url, headers=headers, data=data, timeout=self.timeout, verify=verify_ssl, stream=True
                 )
             else:
                 self.errors.append(
