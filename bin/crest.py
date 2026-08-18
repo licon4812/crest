@@ -301,7 +301,9 @@ class CustomRest(StreamingCommand):
                     return [event]
             return [event]
 
-        for line in response.iter_lines(decode_unicode=True):
+        # A small chunk size is important for SSE: the default (512 bytes) can
+        # buffer several small events and make Splunk appear to return nothing.
+        for line in response.iter_lines(chunk_size=1, decode_unicode=True):
             if isinstance(line, bytes):
                 line = line.decode("utf-8", errors="replace")
 
@@ -471,25 +473,30 @@ class CustomRest(StreamingCommand):
         
         try:
             # --- Method Router ---
+            # Keep the read side open for streaming endpoints.  The command
+            # can then emit events until the server closes the response or
+            # Splunk cancels the search; self.timeout still limits connection
+            # establishment.
+            request_timeout = (self.timeout, None)
             if method == "get":
                 return requests.get(
-                    url, headers=headers, data=data, timeout=self.timeout, verify=verify_ssl, stream=True
+                    url, headers=headers, data=data, timeout=request_timeout, verify=verify_ssl, stream=True
                 )
             elif method == "post":
                 return requests.post(
-                    url, headers=headers, data=data, timeout=self.timeout, verify=verify_ssl, stream=True
+                    url, headers=headers, data=data, timeout=request_timeout, verify=verify_ssl, stream=True
                 )
             elif method == "put": # NEW
                 return requests.put(
-                    url, headers=headers, data=data, timeout=self.timeout, verify=verify_ssl, stream=True
+                    url, headers=headers, data=data, timeout=request_timeout, verify=verify_ssl, stream=True
                 )
             elif method == "patch": # NEW
                 return requests.patch(
-                    url, headers=headers, data=data, timeout=self.timeout, verify=verify_ssl, stream=True
+                    url, headers=headers, data=data, timeout=request_timeout, verify=verify_ssl, stream=True
                 )
             elif method == "delete":
                 return requests.delete(
-                    url, headers=headers, data=data, timeout=self.timeout, verify=verify_ssl, stream=True
+                    url, headers=headers, data=data, timeout=request_timeout, verify=verify_ssl, stream=True
                 )
             else:
                 self.errors.append(

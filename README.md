@@ -108,7 +108,7 @@ In streaming mode, you can use `$field_name$` syntax in the `url`, `data`, and `
     -   Default: `0` (no delay).
     -   Example: `delay=0.5` (waits 500ms after each call).
 -   **`timeout`** (optional): The number of seconds to wait for the server to respond.
-    -   Default: `10`.
+    -   Default: `10` seconds for connection establishment. Response bodies are streamed until complete; SSE responses can remain open until the server closes them or the search is stopped.
 -   **`debug`** (optional): Set to `true` to return the request details (URL, headers, data) *without* executing the request.
     -   Default: `false`.
 
